@@ -73,3 +73,9 @@ python main.py
 
 * **Markdown Support:** Live preview and parsing for Markdown syntax (`# Headers`, `**bold**`, lists, code blocks).
 * **Search Across All Notes:** Global search bar in the sidebar to search text content across all currently open tabs and saved files.
+* **IOS Notes Style Checkboxes** Add text theme based check boxes (technically circles but not exactly radio buttons since its a check)
+* **Light Weight Spellcheck** Underlining potentially misspelled words. Add common false flags to ignore dictionary
+* **UI customization** Add more settings for UI customisation
+## 5. Future QOL Updates
+* Unsaved note tabs will be named first n characters of the note excluding spaces (win notes feature)
+* Make top most menu more professional rather then the current beta version
