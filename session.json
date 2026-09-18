@@ -1,28 +1,16 @@
 {
     "active_tab": 0,
     "bg_color": "#000000",
-    "spell_color": "#FF453A",
-    "custom_dictionary": [],
+    "selection_bg_color": "#0A84FF",
+    "spell_color": "#00aa00",
+    "custom_dictionary": [
+        "supercalifrag"
+    ],
     "tabs": [
         {
-            "title": "The quick brown jump",
+            "title": "Untitled Note",
             "file_path": null,
-            "unsaved_text": "The quick brown jumpepd over the lazy dog"
-        },
-        {
-            "title": "An",
-            "file_path": null,
-            "unsaved_text": "    \n  \nAn\nTo me\nlazy"
-        },
-        {
-            "title": "LAZY BEANS",
-            "file_path": null,
-            "unsaved_text": "LAZY BEANS"
-        },
-        {
-            "title": "ok man",
-            "file_path": null,
-            "unsaved_text": "ok man"
+            "unsaved_text": ""
         }
     ]
 }

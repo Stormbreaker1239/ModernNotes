@@ -9,10 +9,11 @@ from PyQt6.QtWidgets import (
     QFileDialog, QWidget, QVBoxLayout, QDialog, QLabel, QLineEdit,
     QPushButton, QHBoxLayout, QMessageBox, QListWidget, QListWidgetItem,
     QSplitter, QStackedWidget, QCheckBox, QInputDialog, QAbstractItemView,
-    QMenu
+    QMenu, QStatusBar
 )
 from PyQt6.QtGui import QAction, QColor, QFont, QTextCursor, QTextCharFormat, QSyntaxHighlighter
 from PyQt6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
+
 
 SESSION_FILE = "session.json"
 spell_engine = SpellChecker()
@@ -35,6 +36,10 @@ class SpellHighlighter(QSyntaxHighlighter):
         spell_engine.word_frequency.add(word.lower())
         self.rehighlight()
 
+    def remove_user_word(self, word: str):
+        self.user_dictionary.discard(word.lower())
+        self.rehighlight()
+
     def highlightBlock(self, text):
         if not self.enabled:
             return
@@ -48,9 +53,98 @@ class SpellHighlighter(QSyntaxHighlighter):
             word_lower = word.lower()
             
             if len(word) > 1 and word_lower not in self.user_dictionary:
-                # Check spelling via pyspellchecker
                 if word_lower in spell_engine.unknown([word_lower]):
                     self.setFormat(match.start(), match.end() - match.start(), fmt)
+
+
+class DictionaryManagerDialog(QDialog):
+    """Dialog to add, edit, and remove custom dictionary words."""
+    def __init__(self, main_app):
+        super().__init__(main_app)
+        self.main_app = main_app
+        self.setWindowTitle("Custom Dictionary Manager")
+        self.setFixedSize(380, 420)
+
+        self.setStyleSheet("""
+            QDialog { background-color: #1C1C1E; color: #F2F2F7; }
+            QLabel { color: #8E8E93; font-size: 12px; font-weight: 500; }
+            QListWidget {
+                background-color: #2C2C2E; color: #F2F2F7;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px; padding: 4px; outline: none;
+            }
+            QListWidget::item { border-radius: 6px; padding: 6px; }
+            QListWidget::item:selected { background-color: #0A84FF; color: #FFFFFF; }
+            QPushButton {
+                background-color: #2C2C2E; color: #0A84FF;
+                border: none; border-radius: 8px;
+                padding: 6px 12px; font-weight: 600; font-size: 12px;
+            }
+            QPushButton:hover { background-color: #3A3A3C; }
+            QPushButton:pressed { background-color: #0A84FF; color: #FFFFFF; }
+            QPushButton#delete_btn { color: #FF453A; }
+            QPushButton#delete_btn:hover { background-color: rgba(255, 69, 58, 0.2); }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        layout.addWidget(QLabel("User Dictionary Words:"))
+
+        self.word_list = QListWidget()
+        layout.addWidget(self.word_list)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+
+        self.add_btn = QPushButton("➕ Add")
+        self.edit_btn = QPushButton("✏️ Edit")
+        self.delete_btn = QPushButton("🗑️ Remove")
+        self.delete_btn.setObjectName("delete_btn")
+
+        btn_layout.addWidget(self.add_btn)
+        btn_layout.addWidget(self.edit_btn)
+        btn_layout.addWidget(self.delete_btn)
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+
+        self.add_btn.clicked.connect(self.add_word)
+        self.edit_btn.clicked.connect(self.edit_word)
+        self.delete_btn.clicked.connect(self.delete_word)
+
+        self.populate_words()
+
+    def populate_words(self):
+        self.word_list.clear()
+        for word in sorted(self.main_app.custom_dictionary):
+            self.word_list.addItem(word)
+
+    def add_word(self):
+        word, ok = QInputDialog.getText(self, "Add Word", "Enter word to add:")
+        if ok and word.strip():
+            self.main_app.add_word_to_all_highlighters(word.strip().lower())
+            self.populate_words()
+
+    def edit_word(self):
+        current_item = self.word_list.currentItem()
+        if not current_item:
+            return
+        old_word = current_item.text()
+        new_word, ok = QInputDialog.getText(self, "Edit Word", "Modify word:", text=old_word)
+        if ok and new_word.strip() and new_word.strip().lower() != old_word:
+            self.main_app.remove_word_from_all_highlighters(old_word)
+            self.main_app.add_word_to_all_highlighters(new_word.strip().lower())
+            self.populate_words()
+
+    def delete_word(self):
+        current_item = self.word_list.currentItem()
+        if not current_item:
+            return
+        word = current_item.text()
+        self.main_app.remove_word_from_all_highlighters(word)
+        self.populate_words()
 
 
 class TabItemWidget(QWidget):
@@ -221,6 +315,7 @@ class ModernNotesApp(QMainWindow):
         self.setGeometry(100, 100, 980, 680)
 
         self.current_bg_color = "#000000"
+        self.selection_bg_color = "#0A84FF"
         self.spell_color = "#FF453A"
         self.sidebar_width = 240
         self.sidebar_collapsed = False
@@ -291,9 +386,44 @@ class ModernNotesApp(QMainWindow):
         self.highlighters = []
         self.tabs_data = []
 
+        self.create_status_bar()
         self.create_menu_bar()
         self.apply_theme()
         self.load_session()
+
+    def create_status_bar(self):
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
+        self.status_line_col = QLabel("Ln 1, Col 1")
+        self.status_char_count = QLabel("0 characters")
+        self.status_file_type = QLabel("Plain text")
+
+        for lbl in (self.status_line_col, self.status_char_count, self.status_file_type):
+            lbl.setStyleSheet("color: #8E8E93; font-size: 11px; padding: 0 8px;")
+
+        self.status_bar.addWidget(self.status_line_col)
+        self.status_bar.addWidget(self.status_char_count)
+        self.status_bar.addWidget(self.status_file_type)
+
+    def update_status_bar(self):
+        editor = self.get_current_editor()
+        if not editor:
+            self.status_line_col.setText("Ln 1, Col 1")
+            self.status_char_count.setText("0 characters")
+            return
+
+        cursor = editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        self.status_line_col.setText(f"Ln {line}, Col {col}")
+
+        total_chars = len(editor.toPlainText())
+        if cursor.hasSelection():
+            selected_chars = len(cursor.selectedText())
+            self.status_char_count.setText(f"{selected_chars} of {total_chars} characters")
+        else:
+            self.status_char_count.setText(f"{total_chars} characters")
 
     def sync_tabs_on_reorder(self, parent, start, end, destination, row):
         if start == row or start == row - 1:
@@ -326,6 +456,10 @@ class ModernNotesApp(QMainWindow):
             QListWidget::item:hover { background-color: rgba(255, 255, 255, 0.04); }
             QListWidget::item:selected { background-color: rgba(10, 132, 255, 0.22); border: 1px solid rgba(10, 132, 255, 0.4); }
             QSplitter::handle { background-color: rgba(255, 255, 255, 0.08); }
+            QStatusBar {
+                background-color: #1C1C1E; color: #8E8E93;
+                border-top: 1px solid rgba(255, 255, 255, 0.08);
+            }
         """)
 
     def get_current_editor(self) -> QTextEdit:
@@ -345,10 +479,22 @@ class ModernNotesApp(QMainWindow):
         open_action.triggered.connect(self.open_note)
         file_menu.addAction(open_action)
 
-        save_action = QAction("Save Note", self)
+        file_menu.addSeparator()
+
+        save_action = QAction("Save", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self.save_note)
         file_menu.addAction(save_action)
+
+        save_as_action = QAction("Save As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self.save_note_as)
+        file_menu.addAction(save_as_action)
+
+        save_all_action = QAction("Save All", self)
+        save_all_action.setShortcut("Ctrl+Alt+S")
+        save_all_action.triggered.connect(self.save_all_notes)
+        file_menu.addAction(save_all_action)
 
         file_menu.addSeparator()
 
@@ -384,9 +530,9 @@ class ModernNotesApp(QMainWindow):
 
         edit_menu.addSeparator()
 
-        add_dict_action = QAction("Add Word to Custom Dictionary...", self)
-        add_dict_action.triggered.connect(self.add_custom_word_dialog)
-        edit_menu.addAction(add_dict_action)
+        dict_mgr_action = QAction("Manage Custom Dictionary...", self)
+        dict_mgr_action.triggered.connect(self.open_dictionary_manager)
+        edit_menu.addAction(dict_mgr_action)
 
         view_menu = menu_bar.addMenu("View")
         toggle_sidebar_action = QAction("Toggle Sidebar", self)
@@ -399,6 +545,10 @@ class ModernNotesApp(QMainWindow):
         bg_color_action = QAction("Change Canvas Color...", self)
         bg_color_action.triggered.connect(self.change_bg_color)
         view_menu.addAction(bg_color_action)
+
+        selection_color_action = QAction("Selection Highlight Color...", self)
+        selection_color_action.triggered.connect(self.change_selection_color)
+        view_menu.addAction(selection_color_action)
 
         spell_color_action = QAction("Spellcheck Underline Color...", self)
         spell_color_action.triggered.connect(self.change_spell_color)
@@ -458,22 +608,63 @@ class ModernNotesApp(QMainWindow):
                     return True
         return False
 
-    def add_custom_word_dialog(self):
-        word, ok = QInputDialog.getText(self, "Add Word", "Enter word to ignore:")
-        if ok and word.strip():
-            self.add_word_to_all_highlighters(word.strip().lower())
+    def open_dictionary_manager(self):
+        dialog = DictionaryManagerDialog(self)
+        dialog.exec()
 
     def add_word_to_all_highlighters(self, word: str):
         self.custom_dictionary.add(word.lower())
+        valid_highlighters = []
         for h in self.highlighters:
-            h.add_user_word(word)
+            try:
+                h.add_user_word(word)
+                valid_highlighters.append(h)
+            except RuntimeError:
+                pass
+        self.highlighters = valid_highlighters
+
+    def remove_word_from_all_highlighters(self, word: str):
+        self.custom_dictionary.discard(word.lower())
+        valid_highlighters = []
+        for h in self.highlighters:
+            try:
+                h.remove_user_word(word)
+                valid_highlighters.append(h)
+            except RuntimeError:
+                pass
+        self.highlighters = valid_highlighters
 
     def change_spell_color(self):
         color = QColorDialog.getColor(QColor(self.spell_color), self, "Select Spellcheck Line Color")
         if color.isValid():
             self.spell_color = color.name()
+            valid_highlighters = []
             for h in self.highlighters:
-                h.set_underline_color(self.spell_color)
+                try:
+                    h.set_underline_color(self.spell_color)
+                    valid_highlighters.append(h)
+                except RuntimeError:
+                    pass
+            self.highlighters = valid_highlighters
+
+    def change_selection_color(self):
+        color = QColorDialog.getColor(QColor(self.selection_bg_color), self, "Select Text Selection Color")
+        if color.isValid():
+            self.selection_bg_color = color.name()
+            self.update_editors_style()
+
+    def update_editors_style(self):
+        for tab in self.tabs_data:
+            editor = tab["widget"]
+            editor.setStyleSheet(f"""
+                QTextEdit {{
+                    background-color: {self.current_bg_color};
+                    color: #F2F2F7;
+                    border: none;
+                    padding: 24px;
+                    selection-background-color: {self.selection_bg_color};
+                }}
+            """)
 
     def toggle_sidebar(self):
         start_val = self.splitter.sizes()[0]
@@ -496,7 +687,6 @@ class ModernNotesApp(QMainWindow):
     def show_spelling_menu(self, editor: QTextEdit, pos):
         """Build context menu containing top 3 PySpellChecker suggestions if clicked word is misspelled."""
         cursor = editor.cursorForPosition(pos)
-        # Use WordUnderCursor for PyQt6 compatibility
         cursor.select(QTextCursor.SelectionType.WordUnderCursor)
         selected_word = cursor.selectedText().strip()
 
@@ -505,21 +695,18 @@ class ModernNotesApp(QMainWindow):
         if selected_word and len(selected_word) > 1:
             word_clean = selected_word.lower()
             if word_clean in spell_engine.unknown([word_clean]) and word_clean not in self.custom_dictionary:
-                # Retrieve up to 3 closest suggestions
                 candidates = list(spell_engine.candidates(word_clean) or [])[:3]
 
                 suggestion_actions = []
                 for cand in candidates:
-                    # Match capitalisation of original word
                     formatted_cand = cand.capitalize() if selected_word[0].isupper() else cand
                     act = QAction(f"💡 {formatted_cand}", menu)
-                    act.triggered.connect(lambda checked, replacement=formatted_cand: cursor.insertText(replacement))
+                    act.triggered.connect(lambda checked=False, c=formatted_cand: cursor.insertText(c))
                     suggestion_actions.append(act)
 
                 add_dict_act = QAction(f"➕ Add '{selected_word}' to Dictionary", menu)
                 add_dict_act.triggered.connect(lambda: self.add_word_to_all_highlighters(selected_word))
 
-                # Insert suggestions at the top of context menu
                 first_action = menu.actions()[0] if menu.actions() else None
                 for act in reversed(suggestion_actions):
                     menu.insertAction(first_action, act)
@@ -539,7 +726,7 @@ class ModernNotesApp(QMainWindow):
                 color: #F2F2F7;
                 border: none;
                 padding: 24px;
-                selection-background-color: #0A84FF;
+                selection-background-color: {self.selection_bg_color};
             }}
         """)
         editor.setPlainText(content)
@@ -552,13 +739,15 @@ class ModernNotesApp(QMainWindow):
         editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         editor.customContextMenuRequested.connect(lambda pos: self.show_spelling_menu(editor, pos))
 
+        editor.cursorPositionChanged.connect(self.update_status_bar)
+        editor.selectionChanged.connect(self.update_status_bar)
+
         original_mouse_press = editor.mousePressEvent
 
         def mousePressEvent(event):
             if event.button() == Qt.MouseButton.LeftButton:
                 if self.toggle_checkbox_on_click(editor, event):
                     return
-                # Show suggestions menu on left-click if clicking on a misspelled word
                 cursor = editor.cursorForPosition(event.pos())
                 cursor.select(QTextCursor.SelectionType.WordUnderCursor)
                 word = cursor.selectedText().strip().lower()
@@ -617,6 +806,7 @@ class ModernNotesApp(QMainWindow):
         self.tab_list.setItemWidget(list_item, item_widget)
 
         self.tab_list.setCurrentRow(index)
+        self.update_status_bar()
 
     def switch_tab(self, index):
         if index < 0 or index >= len(self.tabs_data):
@@ -638,6 +828,7 @@ class ModernNotesApp(QMainWindow):
                 return
 
         self.editor_stack.setCurrentIndex(index)
+        self.update_status_bar()
 
     def close_tab_by_widget(self, item: QListWidgetItem):
         row = self.tab_list.row(item)
@@ -649,6 +840,10 @@ class ModernNotesApp(QMainWindow):
 
         item = self.tab_list.takeItem(index)
         widget = self.tabs_data[index]["widget"]
+
+        doc = widget.document()
+        self.highlighters = [h for h in self.highlighters if h.document() != doc]
+
         self.editor_stack.removeWidget(widget)
         widget.deleteLater()
 
@@ -657,6 +852,8 @@ class ModernNotesApp(QMainWindow):
 
         if len(self.tabs_data) == 0:
             self.add_new_tab()
+        else:
+            self.update_status_bar()
 
     def open_find_dialog(self):
         editor = self.get_current_editor()
@@ -698,16 +895,7 @@ class ModernNotesApp(QMainWindow):
         color = QColorDialog.getColor(QColor(self.current_bg_color), self, "Select Background Color")
         if color.isValid():
             self.current_bg_color = color.name()
-            for tab in self.tabs_data:
-                editor = tab["widget"]
-                editor.setStyleSheet(f"""
-                    QTextEdit {{
-                        background-color: {self.current_bg_color};
-                        border: none;
-                        padding: 24px;
-                        selection-background-color: #0A84FF;
-                    }}
-                """)
+            self.update_editors_style()
 
     def open_note(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Note", "", "Text Files (*.txt);;All Files (*)")
@@ -723,14 +911,32 @@ class ModernNotesApp(QMainWindow):
             return
 
         data = self.tabs_data[index]
-        file_path = data["file_path"]
+        if not data["file_path"]:
+            self.save_note_as()
+        else:
+            self._write_file(index, data["file_path"])
 
-        if not file_path:
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Note", "", "Text Files (*.txt);;All Files (*)")
-            if not file_path:
-                return
-            data["file_path"] = file_path
+    def save_note_as(self):
+        index = self.tab_list.currentRow()
+        if index < 0:
+            return
 
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Note As", "", "Text Files (*.txt);;All Files (*)")
+        if file_path:
+            self._write_file(index, file_path)
+
+    def save_all_notes(self):
+        for index, data in enumerate(self.tabs_data):
+            if data["file_path"]:
+                self._write_file(index, data["file_path"])
+            else:
+                file_path, _ = QFileDialog.getSaveFileName(self, f"Save Note {index + 1} As", "", "Text Files (*.txt);;All Files (*)")
+                if file_path:
+                    self._write_file(index, file_path)
+
+    def _write_file(self, index, file_path):
+        data = self.tabs_data[index]
+        data["file_path"] = file_path
         filename = os.path.basename(file_path)
         editor = data["widget"]
 
@@ -746,6 +952,7 @@ class ModernNotesApp(QMainWindow):
         session_data = {
             "active_tab": self.tab_list.currentRow(),
             "bg_color": self.current_bg_color,
+            "selection_bg_color": self.selection_bg_color,
             "spell_color": self.spell_color,
             "custom_dictionary": list(self.custom_dictionary),
             "tabs": []
@@ -778,6 +985,7 @@ class ModernNotesApp(QMainWindow):
                 session_data = json.load(f)
 
             self.current_bg_color = session_data.get("bg_color", "#000000")
+            self.selection_bg_color = session_data.get("selection_bg_color", "#0A84FF")
             self.spell_color = session_data.get("spell_color", "#FF453A")
             self.custom_dictionary = set(session_data.get("custom_dictionary", []))
 
